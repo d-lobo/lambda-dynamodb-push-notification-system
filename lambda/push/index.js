@@ -1,4 +1,3 @@
-
 var AWS = require("aws-sdk");
 
 AWS.config.update({
@@ -11,59 +10,71 @@ exports.handler = (event) => {
   let apiGwId = event.requestContext.apiId;
   var domain = "${apiGwId}.execute-api.${process.env.AWS_REGION}.amazonaws.com";
   var stage = process.env.WS_STAGE;
+  var body = JSON.parse(event.body);
+  var userId = body['userId']
+  var content = body;
+  var persist = body['persist'];
+
   var params = {
-    TableName: process.env.DB_CLIENT_TABLE;
-  };
-
-  let promise = dynamodb.scan(params).promise();
-
-  promise
-  .then(function(data) {
-    return handle(data, domain, stage, event);
-  })
-  .catch(function(err) { console.log("error: ", err);});
-
-  return { "statusCode": 200 };
-};
-
-function handle(data, domain, stage, event) {
-  var json = JSON.parse(JSON.stringify(data, null, 2));
-
-  var payload = createFrontendNotification(event);
-  persistNotification(event);
-
-  var apigw = new AWS.ApiGatewayManagementApi({apiVersion: '2018-11-29',endpoint: domain + '/' + stage});
-  return json.Items.map(function(value) {
-    return value.connection_id.S;
-  }).map(value => {
-    console.log("sending message to client: ", value, payload);
-    apigw.postToConnection({ ConnectionId: value, Data: JSON.stringify(payload)}).promise();
-  });
-}
-
-function persistNotification(event) {
-  var params = {
-    TableName: process.env.DATABASE_TABLE_NOTIFICATIONS,
-    Item:{
-      'notificationId' : { S: event.notificationId },
-      'type': { S: event.type },
-      'level' : { S: event.level },
-      'event': { S: event.event },
-      'timestamp' : {S: event.timestamp.toString()}
+    TableName: process.env.DB_CLIENT_TABLE,
+    ProjectionExpression: "connection_id, userId",
+    KeyConditionExpression: "#userId = :userId",
+    ExpressionAttributeNames: {
+      "#userId": "userId"
+    },
+    ExpressionAttributeValues: {
+      ":userId": userId
     }
   };
 
+  let promise = dynamodb.query(params).promise();
+
+  promise
+  .then(clients => {
+    push(clients, content, persist, domain, stage);
+    return {"statusCode": 200};
+  })
+  .catch(err => {
+    console.log("err: ", err);
+    return {"statusCode": 500};
+  });
+};
+
+function push(clients, content, persist, domain, stage) {
+  var notification = createFrontendNotification(content);
+
+  if (persist) {
+    persistNotification(content);
+  }
+
+  var apigw = new AWS.ApiGatewayManagementApi(
+      {apiVersion: '2018-11-29', endpoint: domain + '/' + stage});
+
+  return clients.Items.map(client => client.connection_id.S).map(
+      connectionId => {
+        console.log("sending message to client(%s): %s", connectionId,
+            notification);
+        apigw.postToConnection({
+          ConnectionId: value,
+          Data: JSON.stringify(notification)
+        }).promise();
+      });
+}
+
+function persistNotification(notification) {
+  var params = {
+    TableName: process.env.DATABASE_TABLE_NOTIFICATIONS,
+    Item: {
+      'userId': { S : notification.userId},
+      'content': { S : notification.content}
+    }
+  };
   return dynamodb.putItem(params).promise();
 }
 
-function createFrontendNotification(event) {
+function createFrontendNotification(notification) {
   return {
-    "type" : event.type,
-    "notificationId": event.notificationId,
-    "timestamp": event.timestamp,
-    "level": event.level,
-    "payload": {
-      "event": event.event
-    }
+    "userId": notification.userId,
+    "content": notification.content
   };
 }

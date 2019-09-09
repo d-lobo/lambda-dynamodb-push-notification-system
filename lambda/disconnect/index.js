@@ -16,6 +16,5 @@ exports.handler = async (event) => {
         }
     };
     console.log("disconnecting client ", connectionId);
-
     return dynamodb.deleteItem(params).promise();
 };
